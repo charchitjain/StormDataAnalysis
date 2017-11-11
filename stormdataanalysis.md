@@ -1,0 +1,338 @@
+# Public health and economic problems caused by Storms and other severe weather events.
+Charchit Bakliwal  
+November 12th, 2017  
+## Synopsis
+In this report, we aim to analyze the impact of different weather events on public health and economy based on the storm database collected from the U.S. National Oceanic and Atmospheric Administration's (NOAA) from 1950 - 2011. We will use the estimates of fatalities, injuries, property and crop damage to decide which types of event are most harmful to the population health and economy. From these data, we found that excessive heat and tornado are most harmful with respect to population health, while flood, drought, and hurricane/typhoon have the greatest economic consequences.
+
+The analysis confirmed that the information of most recent events have better quality in the database, last years are more complete. By far the most harmful events are tornadoes in terms of public health, and floods regarding damage to the economy.
+
+
+## Data processing
+
+
+
+### Dependencies
+
+
+The following code is used to load the dependencies required for the data analysis.
+
+# Load libraries
+
+```r
+library(ggplot2)
+library(stringr)
+library(R.utils)
+library(data.table)
+library(dplyr)
+library(lubridate)
+library(reshape2)
+library(scales)
+```
+
+
+### Load the dataset
+
+The data is downloaded from the internet and loaded into the environment.
+
+
+```r
+fileUrl <-"https://d396qusza40orc.cloudfront.net/repdata%2Fdata%2FStormData.csv.bz2"
+
+# Create directory data if needed
+if(!file.exists("./data")) {
+    dir.create("./data")
+}
+
+# Download the compressed file if needed
+if(!file.exists("./data/repdata-data-StormData.csv.bz2")) {
+    download.file(fileUrl, 
+                  "./data/repdata-data-StormData.csv.bz2", 
+                  mode = "wb") # mode "wb" for binary files
+}
+
+# Extract the file if needed
+if(!file.exists("./data/repdata-data-StormData.csv")) {
+    bunzip2("./data/repdata-data-StormData.csv.bz2")
+}
+
+# Load the CSV
+stormData <- fread("./data/repdata-data-StormData.csv")
+```
+
+```
+## 
+Read 17.6% of 967216 rows
+Read 34.1% of 967216 rows
+Read 49.6% of 967216 rows
+Read 60.0% of 967216 rows
+Read 74.4% of 967216 rows
+Read 81.7% of 967216 rows
+Read 91.0% of 967216 rows
+Read 902297 rows and 37 (of 37) columns from 0.523 GB file in 00:00:09
+```
+
+
+###event types
+
+The type of each weather event is stored in the column `EVTYPE` of the dataset.
+
+In order to improve the analysis quality the event types reported needs to be normalized.
+
+```r
+# Remove whitespaces at the begining and the end of the event type
+stormData$EVTYPE <- str_trim(stormData$EVTYPE)
+
+# Put all the event types in upper case
+stormData$EVTYPE <- toupper(stormData$EVTYPE)
+```
+
+
+### Subset columns relevant to the analysis
+
+
+```r
+stormDataValues <- select(stormData, EVTYPE, 
+                          FATALITIES, INJURIES,
+                          PROPDMG, PROPDMGEXP,
+                          CROPDMG, CROPDMGEXP)
+```
+#### Normalize property damage values
+
+A new column `PropertyDamage` is added to the work dataset for the normalized value in property damage estimated, expressed in US dollars.
+
+
+```r
+# Initialize new column with the value of the original one
+stormDataValues$PropertyDamage <- stormDataValues$PROPDMG
+
+# Process K/h/H/blank cases (multiplier by 1,000):
+stormDataValues[PROPDMGEXP == "h"]$PROPDMGEXP <- "K"
+stormDataValues[PROPDMGEXP == "H"]$PROPDMGEXP <- "K"
+stormDataValues[PROPDMGEXP == ""]$PROPDMGEXP <- "K"
+stormDataValues[PROPDMGEXP == "K"]$PropertyDamage <- 
+    stormDataValues[PROPDMGEXP == "K"]$PROPDMG * 1000
+
+# Process m/M (multiplier by 1,000,000):
+stormDataValues[PROPDMGEXP == "m"]$PROPDMGEXP <- "M"
+stormDataValues[PROPDMGEXP == "M"]$PropertyDamage <- 
+    stormDataValues[PROPDMGEXP == "M"]$PROPDMG * 1000000
+
+# Process B (multiplier by 1,000,000,000):
+stormDataValues[PROPDMGEXP == "B"]$PropertyDamage <- 
+    stormDataValues[PROPDMGEXP == "B"]$PROPDMG * 1000000000
+
+# Process 1/2/.../8 (multiplier by 10 ~ ^ exponential indicator)
+stormDataValues[
+    PROPDMGEXP %in% c("1", "2", "3", "4", "5", "6", "7", "8")]$PropertyDamage <- 
+    stormDataValues[
+        PROPDMGEXP %in% c("1", "2", "3", "4", "5", "6", "7", "8")]$PROPDMG * 10 ^ as.numeric(stormDataValues[
+        PROPDMGEXP %in% c("1", "2", "3", "4", "5", "6", "7", "8")]$PROPDMGEXP)
+```
+
+
+#### Normalize crop damage values
+
+A new column `CropDamage` is added to the work dataset for the normalized value in crop damage estimated, expressed in US dollars.
+
+
+```r
+# Initialize new column with the value of the original one
+stormDataValues$CropDamage <- stormDataValues$CROPDMG
+
+# Process k/K (multiplier by 1,000):
+stormDataValues[CROPDMGEXP == "k"]$CROPDMGEXP <- "K"
+stormDataValues[CROPDMGEXP == "K"]$CropDamage <- 
+    stormDataValues[CROPDMGEXP == "K"]$CROPDMG * 1000
+
+# Process m/M (multiplier by 1,000,000):
+stormDataValues[CROPDMGEXP == "m"]$CROPDMGEXP <- "M"
+stormDataValues[CROPDMGEXP == "M"]$CropDamage <- 
+    stormDataValues[CROPDMGEXP == "M"]$CROPDMG * 1000000
+
+# Process B (multiplier by 1,000,000,000):
+stormDataValues[CROPDMGEXP == "B"]$CropDamage <- 
+    stormDataValues[CROPDMGEXP == "B"]$CROPDMG * 1000000000
+```
+
+
+### Aggregate by damage kind
+
+An aggregation strategy is devised to stablish a ranking for the two groups of informations: damage to the public health and to the economy.
+
+The new column `PeopleHarmed` is the sum of the `FATALITIES` and `INJURIES` columns.
+
+The new column `EconomicDamage` is the sum of the `CropDamage` and `PropertyDamage` columns.
+
+
+```r
+# New column with the sum of fatalities and injuries 
+stormDataValues$PeopleHarmed <- 
+    stormDataValues$FATALITIES + stormDataValues$INJURIES
+
+# New column with the sum of property and crop damage
+stormDataValues$EconomicDamage <- 
+    stormDataValues$CropDamage + stormDataValues$PropertyDamage
+```
+
+
+### Analyzing the quantiles
+
+The target is to look how the data is grouped after the processing. In order to achieve that, the quantiles of the columns related to the present report are computed.
+
+
+```r
+# Damage to the public health
+quantile(stormDataValues$PeopleHarmed)
+```
+
+```
+##   0%  25%  50%  75% 100% 
+##    0    0    0    0 1742
+```
+
+```r
+# Economic damage
+quantile(stormDataValues$EconomicDamage)
+```
+
+```
+##           0%          25%          50%          75%         100% 
+##            0            0            0         1000 115032500000
+```
+
+For both cases, most of the useful data to address the analysis are located between the `75%` and `100%` groups.
+
+
+### Filtering data at the top of the ranking
+
+After analyzing the quantiles, two separated datasets are created with the data at the top of the ranking for each damage kind.
+
+
+```r
+# Damage to the public health: Last quantile
+healthDamage <- subset(stormDataValues, 
+                       PeopleHarmed > 0, 
+                       c(EVTYPE, FATALITIES, INJURIES, PeopleHarmed))
+
+# Economic damage: Last quantile
+economicDamage <- subset(stormDataValues, 
+                         EconomicDamage > 1000,
+                         c(EVTYPE, PropertyDamage, CropDamage, EconomicDamage))
+```
+
+
+### Summarize data by event type
+
+The final data is grouped by event type and the sum is computed for each damage kind. The two datasets are arranged in descending order of the corresponding numerical value, and only the top 10 event types are taken to present the results. Finally, the data is reorganized in a format suitable for plotting.
+
+
+```r
+# Damage to public health by event type
+groupHealthByEventType <- group_by(healthDamage, EVTYPE) 
+
+# Summarize
+healthByEventType <- summarise_each(groupHealthByEventType, funs(sum))
+
+# Order the data. Most harmful event types at the top
+healthByEventType <- arrange(healthByEventType, -PeopleHarmed)
+
+# Filter only the top 10 events
+topHealthByEventType <- slice(healthByEventType, 1:10)
+
+# Order the factors for the plot
+topHealthByEventType$EVTYPE <- 
+    factor(topHealthByEventType$EVTYPE, 
+           levels = rev(topHealthByEventType$EVTYPE))
+
+# Organize the dataset for the plot
+topHealthByEventType <- 
+    melt(subset(topHealthByEventType, select = -PeopleHarmed), 
+         id.vars = "EVTYPE")
+
+
+# Economic damage by event type
+groupEconomicByEventType <- group_by(economicDamage, EVTYPE) 
+
+# Summarize
+economicByEventType <- summarise_each(groupEconomicByEventType, funs(sum))
+
+# Order the data. Most harmful event types at the top
+economicByEventType <- arrange(economicByEventType, -EconomicDamage)
+
+# Filter only the top 10 events
+topEconomicByEventType <- slice(economicByEventType, 1:10)
+
+# Order the factors for the plot
+topEconomicByEventType$EVTYPE <- 
+    factor(topEconomicByEventType$EVTYPE, 
+           levels = rev(topEconomicByEventType$EVTYPE))
+
+# Organize the dataset for the plot
+topEconomicByEventType <- 
+    melt(subset(topEconomicByEventType, select = -EconomicDamage), 
+         id.vars = "EVTYPE")
+```
+
+
+
+## Results
+
+### Histogram of events by year
+
+As mentioned by NOAA, the events reported are more complete in recent years.
+
+
+```r
+qplot(x = year(mdy_hms(BGN_DATE)),
+      data = stormData,
+      main = "Histogram of weather by year",
+      xlab = "Year (begining of the event)",
+      ylab = "Counts",
+      fill = I("wheat"),
+      col = I("blue"))
+```
+
+![](stormdataanalysis_files/figure-html/histogramEventsByYear-1.png)<!-- -->
+
+### Most harmful event types
+
+#### Damage to the public health
+
+
+```r
+qplot(EVTYPE,value, 
+      data = topHealthByEventType, 
+      fill = variable,
+      main = "Top fatalities and injuries in the US 
+      due to weather events. Period 1950-2011",
+      ylab = "Number of people",
+      xlab = "Weather event",
+      fill = I("wheat"),
+      col = I("blue"))+
+    geom_bar(stat="identity")
+```
+
+![](stormdataanalysis_files/figure-html/plotHealthDamage-1.png)<!-- -->
+*Figure 2. Top 10 event types regarding damage to the public health, decomposed by injuries and fatalities.*
+
+The most harmful events to public health are TORNADO followed by EXCESSIVE HEAT and TSTM WIND.
+
+
+#### Economic damage
+
+
+```r
+qplot(EVTYPE,value / 1000000, 
+      data = topEconomicByEventType, 
+      fill = variable,
+      main = "Top property and crop damage in the US 
+      due to weather events. Period 1950-2011",
+      ylab = "Damage in millions of dollars",
+      xlab = "Weather event") + 
+    geom_bar(stat="identity")
+```
+
+![](stormdataanalysis_files/figure-html/plotEconomicDamage-1.png)<!-- -->
+*Figure 3. Top 10 event types regarding economic damage, decomposed by property and crop damage.*
+
+The most harmful events to the economy are FLOOD, followed by HURRICANE/TYPHOON and TORNADO.
